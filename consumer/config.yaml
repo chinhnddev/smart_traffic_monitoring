@@ -1,0 +1,22 @@
+# Kafka Configuration
+kafka_broker: "kafka:29092"
+topic: "video_frames"
+consumer_group: "crowd-monitoring-consumer-group"
+max_retries: 5
+retry_delay: 2
+
+# YOLO Configuration
+yolo_model: "yolov8n.pt"
+confidence_threshold: 0.5
+person_class_id: 0
+
+# Database Configuration
+db_host: "postgres"
+db_port: 5432
+db_name: "crowd_db"
+db_user: "crowd_user"
+db_password: "crowd_pass"
+
+# Processing Configuration
+batch_size: 10
+max_workers: 2

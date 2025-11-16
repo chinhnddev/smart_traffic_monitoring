@@ -1,0 +1,27 @@
+﻿youtube_url: "https://www.youtube.com/watch?v=5WN2PJ_Qxjs"
+video_source: "youtube"
+frame_interval: 0.5
+kafka_broker: "kafka:29092"
+topic: "video_frames"
+location_id: "location_1"
+max_retries: 5
+retry_delay: 2
+
+yolo_model: "yolov8n.pt"
+confidence_threshold: 0.5
+person_class_id: 0
+
+alert_threshold: 10
+alert_cooldown: 30
+alert_sound: "alert.wav"
+
+show_video: false
+heatmap_alpha: 0.6
+info_box_color: [255, 255, 255]
+info_box_thickness: 2
+
+db_host: "postgres"
+db_port: 5432
+db_name: "crowd_db"
+db_user: "crowd_user"
+db_password: "crowd_pass"

@@ -2,6 +2,14 @@
 
 Hệ thống này xây dựng một pipeline real-time để xử lý video frames và đếm số người sử dụng Kafka, PostgreSQL, và web dashboard.
 
+## Recent updates
+
+- **Docker Compose**: thêm Kafka broker thứ 2 để chạy replication_factor=2, mọi service đều connect cả `kafka:29092` và `kafka-2:29093`. Thêm producer phụ (`producer-quad`). Trong `docker-compose.yml` không nêu port cho services và container name, các cấu hình port chạy local thì đặt trong `docker-compose.override.yml` (không commit) để tránh xung đột dự án khác.
+- **Soft pause pipeline**: `db/init.sql` tạo bảng `pipeline_control` (không còn seed cũ). Producers và consumer đều kiểm tra flag này; Airflow DAG có thêm tasks `pause_pipeline` / `resume_pipeline` để thao tác.
+- **Producers**: dc sửa thành chỉ gửi frame thô (không chạy YOLO). Có 2 cấu hình video (`config.yaml`, `config_quad_cam.yaml`). Mỗi producer đọc `pipeline_control` trong PostgreSQL để dừng/tái hoạt động khi cần.
+- **Consumer**: kết nối cả 2 Kafka broker, tôn trọng flag pause, tiếp tục xử lý YOLO và ghi kết quả vào PostgreSQL như trước.
+
+
 ## Kiến trúc hệ thống
 
 - **Kafka + Zookeeper**: Message broker cho streaming data

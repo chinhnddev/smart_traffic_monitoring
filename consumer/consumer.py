@@ -12,10 +12,6 @@ import os
 import psycopg2
 from psycopg2.extras import execute_values
 from ultralytics import YOLO
-from torch.serialization import add_safe_globals
-from ultralytics.nn.tasks import DetectionModel
-import torch.nn as nn
-from ultralytics.nn.modules import Conv
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
 
@@ -37,7 +33,8 @@ class CrowdMonitoringConsumer:
             self.config = yaml.safe_load(f)
 
         # Kafka configuration
-        self.kafka_broker = self.config['kafka_broker']
+        raw_brokers = self.config['kafka_broker']
+        self.kafka_brokers = [broker.strip() for broker in raw_brokers.split(',') if broker.strip()]
         self.topic = self.config['topic']
         self.consumer_group = self.config['consumer_group']
         self.max_retries = self.config['max_retries']
@@ -66,6 +63,7 @@ class CrowdMonitoringConsumer:
         self.model = None
         self.db_conn = None
         self.running = True
+        self.pipeline_paused = False
 
         # Thiết lập signal handler cho graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -83,7 +81,7 @@ class CrowdMonitoringConsumer:
             try:
                 self.consumer = KafkaConsumer(
                     self.topic,
-                    bootstrap_servers=[self.kafka_broker],
+                    bootstrap_servers=self.kafka_brokers,
                     group_id=self.consumer_group,
                     value_deserializer=lambda v: json.loads(v.decode('utf-8')),
                     auto_offset_reset='latest',
@@ -92,7 +90,7 @@ class CrowdMonitoringConsumer:
                     session_timeout_ms=30000,
                     heartbeat_interval_ms=3000
                 )
-                logger.info(f"Kết nối thành công đến Kafka broker: {self.kafka_broker}")
+                logger.info(f"Kết nối thành công đến Kafka brokers: {', '.join(self.kafka_brokers)}")
                 return True
             except Exception as e:
                 retries += 1
@@ -235,6 +233,19 @@ class CrowdMonitoringConsumer:
             self.db_conn.rollback()
             return False
 
+    def fetch_pipeline_status(self):
+        try:
+            with psycopg2.connect(**self.db_config) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT status FROM pipeline_control ORDER BY id DESC LIMIT 1"
+                    )
+                    status = cursor.fetchone()
+                    return status[0] if status else 'RUNNING'
+        except Exception as e:
+            logger.error(f"Không đọc được pipeline status: {e}")
+            return 'RUNNING'
+
     def consume_messages(self):
         """Tiêu thụ messages từ Kafka và xử lý"""
         logger.info("Bắt đầu consume messages từ Kafka...")
@@ -246,6 +257,18 @@ class CrowdMonitoringConsumer:
             for message in self.consumer:
                 if not self.running:
                     break
+
+                status = self.fetch_pipeline_status()
+                if status == 'PAUSED':
+                    if not self.pipeline_paused:
+                        logger.info("Pipeline đang PAUSED – tạm dừng consume")
+                        self.pipeline_paused = True
+                    time.sleep(2)
+                    continue
+                else:
+                    if self.pipeline_paused:
+                        logger.info("Pipeline RESUMED – tiếp tục consume")
+                        self.pipeline_paused = False
 
                 # Process message
                 result = self.process_message(message.value)

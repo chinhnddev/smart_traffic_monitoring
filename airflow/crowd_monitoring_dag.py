@@ -1,24 +1,26 @@
 from datetime import datetime, timedelta
 
 from airflow import DAG
-
 from airflow.operators.python import PythonOperator
-
 from airflow.operators.bash import BashOperator
+from airflow.utils.trigger_rule import TriggerRule
 
 from airflow.utils.dates import days_ago
 
 import logging
 
 import requests
-
 import subprocess
-
 import time
+from functools import partial
 
 
 
 logger = logging.getLogger(__name__)
+
+COMPOSE_PROJECT_NAME = "crowd-analysis"
+KAFKA_BROKERS = ['kafka:29092', 'kafka-2:29093']
+PRODUCER_SERVICES = ['producer', 'producer-quad']
 
 
 
@@ -37,7 +39,7 @@ default_args = {
     'email_on_retry': False,
 
     'retries': 3,
-
+    
     'retry_delay': timedelta(minutes=5),
 
 }
@@ -77,8 +79,7 @@ def check_kafka_connection():
 
 
         admin_client = KafkaAdminClient(
-
-            bootstrap_servers=['kafka:29092'],
+            bootstrap_servers=KAFKA_BROKERS,
 
             client_id='airflow_monitor'
 
@@ -104,7 +105,7 @@ def check_kafka_connection():
 
             from kafka.admin import NewTopic
 
-            topic = NewTopic(name='video_frames', num_partitions=3, replication_factor=1)
+            topic = NewTopic(name='video_frames', num_partitions=3, replication_factor=2)
 
             admin_client.create_topics([topic])
 
@@ -126,52 +127,33 @@ def check_kafka_connection():
 
 
 
-def check_producer_health():
+def _container_name(service_name: str) -> str:
+    return f"{COMPOSE_PROJECT_NAME}-{service_name}-1"
 
-    """Task 2: Kiểm tra health của Producer"""
 
+def check_container_health(service_name: str):
+    """Generic container health check."""
+    container = _container_name(service_name)
     try:
-
-        # Kiểm tra container producer có đang chạy không
-
         result = subprocess.run(
-
-            ['docker', 'ps', '--filter', 'name=producer', '--format', '{{.Status}}'],
-
+            ['docker', 'ps', '--filter', f'name={container}', '--format', '{{.Status}}'],
             capture_output=True,
-
             text=True,
-
             check=True
-
         )
 
+        status = result.stdout.strip()
+        if 'Up' in status:
+            logger.info("Container %s is running (%s)", container, status)
+            return f"{service_name} healthy"
 
-
-        if 'Up' in result.stdout:
-
-            logger.info("Producer container is running")
-
-            return "Producer is healthy"
-
-        else:
-
-            logger.error("Producer container is not running")
-
-            # Thử restart producer
-
-            subprocess.run(['docker', 'restart', 'producer'], check=True)
-
-            logger.info("Attempted to restart producer")
-
-            return "Producer restarted"
-
-
+        logger.error("Container %s is not running", container)
+        subprocess.run(['docker', 'restart', container], check=True)
+        logger.info("Attempted to restart %s", container)
+        return f"{service_name} restarted"
 
     except Exception as e:
-
-        logger.error(f"Error checking producer health: {e}")
-
+        logger.error("Error checking %s health: %s", container, e)
         raise e
 
 
@@ -187,10 +169,8 @@ def monitor_kafka_topic_lag():
 
 
         consumer = KafkaConsumer(
-
             'video_frames',
-
-            bootstrap_servers=['kafka:29092'],
+            bootstrap_servers=KAFKA_BROKERS,
 
             group_id='airflow_monitor_group',
 
@@ -334,7 +314,7 @@ def comprehensive_health_check():
 
         # Kiểm tra tất cả services
 
-        services = ['zookeeper', 'kafka', 'postgres', 'producer', 'dashboard', 'airflow-webserver', 'airflow-scheduler']
+        services = ['zookeeper', 'kafka', 'kafka-2', 'postgres', 'producer', 'producer-quad', 'consumer', 'dashboard', 'airflow-webserver', 'airflow-scheduler']
 
 
 
@@ -445,15 +425,16 @@ task_check_kafka = PythonOperator(
 
 
 task_check_producer = PythonOperator(
-
     task_id='check_producer_health',
-
-    python_callable=check_producer_health,
-
+    python_callable=partial(check_container_health, 'producer'),
     dag=dag,
-
 )
 
+task_check_producer_quad = PythonOperator(
+    task_id='check_producer_quad_health',
+    python_callable=partial(check_container_health, 'producer-quad'),
+    dag=dag,
+)
 
 
 task_monitor_lag = PythonOperator(
@@ -481,13 +462,9 @@ task_check_dashboard = PythonOperator(
 
 
 task_comprehensive_check = PythonOperator(
-
     task_id='comprehensive_health_check',
-
     python_callable=comprehensive_health_check,
-
     dag=dag,
-
 )
 
 
@@ -496,26 +473,7 @@ task_comprehensive_check = PythonOperator(
 
 def check_consumer_health():
     """Task: Kiểm tra tình trạng container consumer"""
-    try:
-        result = subprocess.run(
-            ['docker', 'ps', '--filter', 'name=consumer', '--format', '{{.Status}}'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-        if 'Up' in result.stdout:
-            logger.info("Consumer container is running")
-            return "Consumer is healthy"
-
-        logger.error("Consumer container is not running")
-        subprocess.run(['docker', 'restart', 'consumer'], check=True)
-        logger.info("Attempted to restart consumer")
-        return "Consumer restarted"
-
-    except Exception as e:
-        logger.error(f"Error checking consumer health: {e}")
-        raise e
+    return check_container_health('consumer')
 
 
 def verify_db_inserts():
@@ -569,5 +527,78 @@ task_verify_db_inserts = PythonOperator(
 )
 
 
+def pause_pipeline():
+    """Set pipeline status to PAUSED."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host='postgres',
+            database='crowd_db',
+            user='crowd_user',
+            password='crowd_pass',
+            port=5432
+        )
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE pipeline_control
+                    SET status = 'PAUSED', updated_at = NOW()
+                    WHERE id = (SELECT id FROM pipeline_control ORDER BY id DESC LIMIT 1)
+                """)
+        logger.info("Pipeline status set to PAUSED")
+        return "PAUSED"
+    except Exception as e:
+        logger.error("Failed to pause pipeline: %s", e)
+        raise e
+
+
+def resume_pipeline():
+    """Set pipeline status to RUNNING."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host='postgres',
+            database='crowd_db',
+            user='crowd_user',
+            password='crowd_pass',
+            port=5432
+        )
+        with conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE pipeline_control
+                    SET status = 'RUNNING', updated_at = NOW()
+                    WHERE id = (SELECT id FROM pipeline_control ORDER BY id DESC LIMIT 1)
+                """)
+        logger.info("Pipeline status set to RUNNING")
+        return "RUNNING"
+    except Exception as e:
+        logger.error("Failed to resume pipeline: %s", e)
+        raise e
+
+
+pause_task = PythonOperator(
+    task_id='pause_pipeline',
+    python_callable=pause_pipeline,
+    dag=dag,
+    trigger_rule=TriggerRule.ALL_DONE,
+)
+
+resume_task = PythonOperator(
+    task_id='resume_pipeline',
+    python_callable=resume_pipeline,
+    dag=dag,
+    trigger_rule=TriggerRule.ALL_DONE,
+)
+
+
 # Định nghĩa dependencies (chạy tuần tự)
-task_check_kafka >> task_check_producer >> task_check_consumer >> task_monitor_lag >> task_verify_db_inserts >> task_check_dashboard >> task_comprehensive_check
+producer_checks = [task_check_producer, task_check_producer_quad]
+
+task_check_kafka >> producer_checks
+producer_checks >> task_check_consumer
+task_check_consumer >> task_monitor_lag >> task_verify_db_inserts >> task_check_dashboard >> task_comprehensive_check
+
+# Utilities (pause/resume) ko phải thành phần chính nhưng có thể trigger thủ công để pause pipeline
+pause_task
+resume_task

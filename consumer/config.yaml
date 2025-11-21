@@ -1,5 +1,5 @@
 # Kafka Configuration
-kafka_broker: "kafka:29092"
+kafka_broker: "kafka:29092,kafka-2:29093"
 topic: "video_frames"
 consumer_group: "crowd-monitoring-consumer-group"
 max_retries: 5

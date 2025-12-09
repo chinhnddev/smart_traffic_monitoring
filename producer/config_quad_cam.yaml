@@ -1,10 +1,10 @@
-﻿youtube_url: "https://www.youtube.com/watch?v=5WN2PJ_Qxjs"
-video_source: "youtube"  
-frame_interval: 0.5      # seconds between frames
+youtube_url: "https://www.youtube.com/watch?v=qG-86nZmZqU"
+video_source: "youtube"
+frame_interval: 0.5
 
 kafka_broker: "kafka:29092,kafka-2:29093"
 topic: "video_frames"
-location_id: "location_1"
+location_id: "location_2_quad_cam"
 
 max_retries: 5
 retry_delay: 2
@@ -15,3 +15,4 @@ db_port: 5432
 db_name: "crowd_db"
 db_user: "crowd_user"
 db_password: "crowd_pass"
+

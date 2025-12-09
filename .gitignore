@@ -1,0 +1,49 @@
+# Docker Compose override file (local configuration)
+docker-compose.override.yml
+
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+*.tmp
+cls
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files (if too large)
+*.pt
+*.pth
+*.h5
+*.pb
+
+# Data directories (if contains large files)
+data/
+*.csv
+*.parquet
+
+
+
+
+

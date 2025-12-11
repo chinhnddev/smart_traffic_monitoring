@@ -6,9 +6,10 @@ max_retries: 5
 retry_delay: 2
 
 # YOLO Configuration
-yolo_model: "yolov8n.pt"
+yolo_model: "yolo11n.pt"
 confidence_threshold: 0.5
 person_class_id: 0
+alert_threshold: 15
 
 # Database Configuration
 db_host: "postgres"

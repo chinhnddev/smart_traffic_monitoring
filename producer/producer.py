@@ -226,7 +226,7 @@ class CrowdMonitoringProducer:
             try:
                 frame_b64 = self.encode_frame(frame)
                 frame_id = f"{self.location_id}-{uuid.uuid4()}"
-                timestamp = datetime.utcnow().isoformat() + "Z"
+                timestamp = time.time()
 
                 if self.send_frame_to_kafka(frame_b64, frame_id, timestamp):
                     frame_count += 1

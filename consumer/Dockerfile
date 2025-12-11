@@ -28,5 +28,6 @@ RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 # Copy application code
 COPY consumer.py .
 COPY config.yaml .
+COPY yolo11n.pt .
 
 CMD ["python", "consumer.py"]

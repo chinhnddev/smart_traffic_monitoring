@@ -12,6 +12,7 @@ Hệ thống này xây dựng một pipeline real-time để xử lý video fram
 - Update dashboard with hourly statistics feature
 - Fix timezone handling (PST/UTC-8 conversion)
 - Update consumer to use YOLOv11n model, logic for operational metric
+- Download Ultralytics model at: "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt". Place it in `consumer` folder. 
 
 
 ## Kiến trúc hệ thống

@@ -14,6 +14,7 @@ from psycopg2.extras import execute_values
 from ultralytics import YOLO
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
+from collections import deque
 
 # Thiết lập logging
 logging.basicConfig(
@@ -44,6 +45,7 @@ class CrowdMonitoringConsumer:
         self.yolo_model_path = self.config['yolo_model']
         self.confidence_threshold = self.config['confidence_threshold']
         self.person_class_id = self.config['person_class_id']
+        self.alert_threshold = self.config['alert_threshold']
 
         # Database configuration
         self.db_config = {
@@ -64,6 +66,19 @@ class CrowdMonitoringConsumer:
         self.db_conn = None
         self.running = True
         self.pipeline_paused = False
+
+        # Operational metrics tracking
+        self.metrics = {
+            'processed': 0,
+            'failed': 0,
+            'latency_samples': deque(maxlen=1000),  # Keep last 1000 samples
+            'alerts': 0,
+            'start_time': time.time(),
+            'last_metrics_log': time.time(),
+            'last_metrics_save': time.time()
+        }
+        self.metrics_log_interval = 60  # Log every 60 seconds
+        self.metrics_save_interval = 300  # Save to DB every 5 minutes
 
         # Thiết lập signal handler cho graceful shutdown
         signal.signal(signal.SIGINT, self.signal_handler)
@@ -169,6 +184,8 @@ class CrowdMonitoringConsumer:
 
     def process_message(self, message):
         """Xử lý một message từ Kafka"""
+        process_start_time = time.time()
+        
         try:
             # Extract data từ message
             frame_bytes_b64 = message.get('frame_bytes')
@@ -178,16 +195,27 @@ class CrowdMonitoringConsumer:
 
             if not all([frame_bytes_b64, timestamp, frame_id, location_id]):
                 logger.warning(f"Message thiếu thông tin cần thiết: {message}")
+                self.metrics['failed'] += 1
                 return None
 
             # Decode frame
             frame = self.decode_frame(frame_bytes_b64)
             if frame is None:
                 logger.error(f"Không thể decode frame cho frame_id: {frame_id}")
+                self.metrics['failed'] += 1
                 return None
 
             # Detect crowd
             crowd_count, detections = self.detect_crowd(frame)
+
+            # Calculate latency (from frame creation to now)
+            latency_ms = (process_start_time - timestamp) * 1000
+            self.metrics['latency_samples'].append(latency_ms)
+            self.metrics['processed'] += 1
+            
+            # Track alerts (threshold )
+            if crowd_count > self.alert_threshold:
+                self.metrics['alerts'] += 1
 
             # Tạo result
             result = {
@@ -197,11 +225,12 @@ class CrowdMonitoringConsumer:
                 'crowd_count': crowd_count
             }
 
-            logger.info(f"Đã xử lý frame {frame_id}: {crowd_count} người")
+            logger.info(f"Đã xử lý frame {frame_id}: {crowd_count} người (latency: {latency_ms:.1f}ms)")
             return result
 
         except Exception as e:
             logger.error(f"Lỗi xử lý message: {e}")
+            self.metrics['failed'] += 1
             return None
 
     def save_batch_to_database(self, results):
@@ -211,8 +240,8 @@ class CrowdMonitoringConsumer:
 
         try:
             with self.db_conn.cursor() as cursor:
-                # Prepare data for bulk insert
-                data = [(r['timestamp'], r['location_id'], r['frame_id'], r['crowd_count']) for r in results]
+                # Prepare data for bulk insert (convert Unix timestamp to datetime)
+                data = [(datetime.fromtimestamp(r['timestamp']), r['location_id'], r['frame_id'], r['crowd_count']) for r in results]
 
                 # Bulk insert
                 execute_values(cursor, """
@@ -245,6 +274,89 @@ class CrowdMonitoringConsumer:
         except Exception as e:
             logger.error(f"Không đọc được pipeline status: {e}")
             return 'RUNNING'
+
+    def calculate_metrics(self):
+        """Calculate current metrics"""
+        elapsed = time.time() - self.metrics['start_time']
+        total_frames = self.metrics['processed'] + self.metrics['failed']
+        
+        # Throughput (FPS)
+        throughput = self.metrics['processed'] / elapsed if elapsed > 0 else 0
+        
+        # Drop rate (%)
+        drop_rate = (self.metrics['failed'] / total_frames * 100) if total_frames > 0 else 0
+        
+        # Latency metrics (ms)
+        if self.metrics['latency_samples']:
+            latency_avg = np.mean(self.metrics['latency_samples'])
+            latency_p95 = np.percentile(self.metrics['latency_samples'], 95)
+        else:
+            latency_avg = latency_p95 = 0
+        
+        # Alert rate (%)
+        alert_rate = (self.metrics['alerts'] / self.metrics['processed'] * 100) if self.metrics['processed'] > 0 else 0
+        
+        return {
+            'throughput': throughput,
+            'latency_avg': latency_avg,
+            'latency_p95': latency_p95,
+            'drop_rate': drop_rate,
+            'alert_rate': alert_rate,
+            'total_processed': self.metrics['processed'],
+            'total_failed': self.metrics['failed'],
+            'total_alerts': self.metrics['alerts']
+        }
+
+    def log_metrics(self):
+        """Log metrics to console and log file"""
+        metrics = self.calculate_metrics()
+        
+        logger.info(
+            f"[METRICS] Throughput: {metrics['throughput']:.2f} FPS | "
+            f"Latency: avg={metrics['latency_avg']:.1f}ms, p95={metrics['latency_p95']:.1f}ms | "
+            f"Drop: {metrics['drop_rate']:.2f}% | "
+            f"Alert: {metrics['alert_rate']:.1f}% ({metrics['total_alerts']} alerts) | "
+            f"Processed: {metrics['total_processed']}, Failed: {metrics['total_failed']}"
+        )
+        
+        self.metrics['last_metrics_log'] = time.time()
+
+    def save_metrics_to_db(self):
+        """Save metrics to operational_metrics table"""
+        try:
+            metrics = self.calculate_metrics()
+            
+            # Prepare data
+            location_id = self.config.get('location_id', 'unknown')
+            metadata = {
+                'location_id': location_id,
+                'window_duration_seconds': int(time.time() - self.metrics['start_time']),
+                'total_processed': metrics['total_processed'],
+                'total_failed': metrics['total_failed']
+            }
+            
+            metrics_data = [
+                ('throughput', metrics['throughput'], json.dumps(metadata)),
+                ('latency_avg', metrics['latency_avg'], json.dumps(metadata)),
+                ('latency_p95', metrics['latency_p95'], json.dumps(metadata)),
+                ('drop_rate', metrics['drop_rate'], json.dumps(metadata)),
+                ('alert_rate', metrics['alert_rate'], json.dumps({'location_id': location_id, 'total_alerts': metrics['total_alerts']}))
+            ]
+            
+            with self.db_conn.cursor() as cursor:
+                execute_values(cursor, """
+                    INSERT INTO operational_metrics (metric_type, value, metadata)
+                    VALUES %s
+                """, metrics_data)
+                self.db_conn.commit()
+            
+            logger.info(f"[METRICS] Đã lưu metrics vào database")
+            self.metrics['last_metrics_save'] = time.time()
+            
+        except Exception as e:
+            logger.error(f"Lỗi lưu metrics vào database: {e}")
+            if self.db_conn:
+                self.db_conn.rollback()
 
     def consume_messages(self):
         """Tiêu thụ messages từ Kafka và xử lý"""
@@ -283,6 +395,14 @@ class CrowdMonitoringConsumer:
                         message_batch = []
                         last_save_time = current_time
 
+                # Log metrics định kỳ
+                if (current_time - self.metrics['last_metrics_log']) >= self.metrics_log_interval:
+                    self.log_metrics()
+
+                # Save metrics to DB định kỳ
+                if (current_time - self.metrics['last_metrics_save']) >= self.metrics_save_interval:
+                    self.save_metrics_to_db()
+
         except Exception as e:
             logger.error(f"Lỗi trong quá trình consume: {e}")
 
@@ -317,6 +437,17 @@ class CrowdMonitoringConsumer:
 
     def cleanup(self):
         """Dọn dẹp tài nguyên"""
+        # Log final metrics
+        logger.info("Chạy Final Metrics Summary...")
+        self.log_metrics()
+        
+        # Try to save final metrics to DB
+        try:
+            if self.db_conn:
+                self.save_metrics_to_db()
+        except Exception as e:
+            logger.error(f"Lỗi lưu final metrics: {e}")
+        
         if self.consumer:
             self.consumer.close()
             logger.info("Đã đóng Kafka consumer")

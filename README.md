@@ -8,6 +8,11 @@ Hệ thống này xây dựng một pipeline real-time để xử lý video fram
 - **Soft pause pipeline**: `db/init.sql` tạo bảng `pipeline_control` (không còn seed cũ). Producers và consumer đều kiểm tra flag này; Airflow DAG có thêm tasks `pause_pipeline` / `resume_pipeline` để thao tác.
 - **Producers**: dc sửa thành chỉ gửi frame thô (không chạy YOLO). Có 2 cấu hình video (`config.yaml`, `config_quad_cam.yaml`). Mỗi producer đọc `pipeline_control` trong PostgreSQL để dừng/tái hoạt động khi cần.
 - **Consumer**: kết nối cả 2 Kafka broker, tôn trọng flag pause, tiếp tục xử lý YOLO và ghi kết quả vào PostgreSQL như trước.
+- Add operational metrics collection (throughput, latency, drop rate, alert rate)
+- Update dashboard with hourly statistics feature
+- Fix timezone handling (PST/UTC-8 conversion)
+- Update consumer to use YOLOv11n model, logic for operational metric
+- Download Ultralytics model at: "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt". Place it in `consumer` folder. 
 
 
 ## Kiến trúc hệ thống

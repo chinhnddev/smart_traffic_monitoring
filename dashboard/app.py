@@ -237,5 +237,66 @@ def get_summary():
         logger.error(f"Lỗi API summary: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/hourly-stats')
+def get_hourly_stats():
+    """API lấy stats theo giờ cụ thể (for report analysis)"""
+    try:
+        location_id = request.args.get('location_id', 'all')
+        hour_start = request.args.get('hour_start')  # Format: "2025-12-11 05:00:00"
+        hour_end = request.args.get('hour_end')      # Format: "2025-12-11 06:00:00"
+        
+        if not hour_start or not hour_end:
+            return jsonify({'error': 'Missing hour_start or hour_end parameter'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Không thể kết nối database'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        if location_id == 'all':
+            query = """
+                SELECT
+                    location_id,
+                    COUNT(*) as total_frames,
+                    COUNT(CASE WHEN crowd_count > 0 THEN 1 END) as active_frames,
+                    ROUND(AVG(crowd_count)) as avg_all,
+                    ROUND(AVG(CASE WHEN crowd_count > 0 THEN crowd_count END)) as avg_active,
+                    MAX(crowd_count) as peak_crowd,
+                    MIN(crowd_count) as min_crowd,
+                    ROUND(100.0 * COUNT(CASE WHEN crowd_count > 0 THEN 1 END) / NULLIF(COUNT(*), 0), 1) as active_rate
+                FROM crowd_results
+                WHERE timestamp >= %s AND timestamp < %s
+                GROUP BY location_id
+                ORDER BY location_id
+            """
+            cursor.execute(query, (hour_start, hour_end))
+        else:
+            query = """
+                SELECT
+                    location_id,
+                    COUNT(*) as total_frames,
+                    COUNT(CASE WHEN crowd_count > 0 THEN 1 END) as active_frames,
+                    ROUND(AVG(crowd_count)) as avg_all,
+                    ROUND(AVG(CASE WHEN crowd_count > 0 THEN crowd_count END)) as avg_active,
+                    MAX(crowd_count) as peak_crowd,
+                    MIN(crowd_count) as min_crowd,
+                    ROUND(100.0 * COUNT(CASE WHEN crowd_count > 0 THEN 1 END) / NULLIF(COUNT(*), 0), 1) as active_rate
+                FROM crowd_results
+                WHERE location_id = %s AND timestamp >= %s AND timestamp < %s
+                GROUP BY location_id
+            """
+            cursor.execute(query, (location_id, hour_start, hour_end))
+        
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
+        
+        return jsonify(results)
+    
+    except Exception as e:
+        logger.error(f"Lỗi API hourly-stats: {e}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

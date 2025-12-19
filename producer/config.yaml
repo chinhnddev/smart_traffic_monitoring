@@ -1,5 +1,5 @@
 ﻿youtube_url: "https://www.youtube.com/watch?v=5WN2PJ_Qxjs"
-video_source: "youtube"  
+video_source: "youtube"
 frame_interval: 0.5      # seconds between frames
 
 kafka_broker: "kafka:29092,kafka-2:29093"
